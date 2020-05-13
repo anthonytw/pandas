@@ -15,6 +15,8 @@ num_values : int, default 0
     number of values that will be aggregated over
 window_size : int, default 0
     the number of rows in a window
+step_size : int, default 1
+    the window step size
 min_periods : int, default None
     min_periods passed from the top level rolling API
 center : bool, default None
@@ -35,7 +37,11 @@ class BaseIndexer:
     """Base class for window bounds calculations."""
 
     def __init__(
-        self, index_array: Optional[np.ndarray] = None, window_size: int = 0, **kwargs,
+        self,
+        index_array: Optional[np.ndarray] = None,
+        window_size: int = 0,
+        step_size: Optional[int] = None,
+        **kwargs,
     ):
         """
         Parameters
@@ -45,6 +51,8 @@ class BaseIndexer:
         """
         self.index_array = index_array
         self.window_size = window_size
+        self.step_size = step_size
+
         # Set user defined kwargs as attributes that can be used in get_window_bounds
         for key, value in kwargs.items():
             setattr(self, key, value)
@@ -73,17 +81,52 @@ class FixedWindowIndexer(BaseIndexer):
         closed: Optional[str] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
 
-        start_s = np.zeros(self.window_size, dtype="int64")
-        start_e = (
-            np.arange(self.window_size, num_values, dtype="int64")
-            - self.window_size
-            + 1
-        )
-        start = np.concatenate([start_s, start_e])[:num_values]
+        if self.step_size is not None:
+            """
+            Proposed new behavior. Ignores partially filled windows, which don't really
+            make sense with fixed (index) width windows. Alignment assumers either
+            centered (`center` = True) or left-aligned (`center` = False). `align`
+            parameter should probably replace `center` with left, right, and center
+            options.
+            """
 
-        end_s = np.arange(self.window_size, dtype="int64") + 1
-        end_e = start_e + self.window_size
-        end = np.concatenate([end_s, end_e])[:num_values]
+            # Compute intervals in semi-closed form [start, end)
+            loffset = self.step_size // 2 if center else 0
+            start = np.arange(
+                loffset,
+                num_values - self.window_size + 1,
+                self.step_size,
+                dtype="int64")
+            end = start + self.window_size
+
+            # Open/close interval appropriately.
+            if closed is None:
+                closed = 'right'
+
+            if closed in ['right', 'both']:
+                # Close right side of interval.
+                end -= 1
+
+            if closed not in ['left', 'both']:
+                # Open left side of interval.
+                start -= 1
+
+        else:
+            """
+            Maintained to reproduce old behavior. Unclear if this should remain.
+            """
+            start_s = np.zeros(self.window_size, dtype="int64")
+            start_e = (
+                np.arange(self.window_size, num_values, dtype="int64")
+                - self.window_size
+                + 1
+            )
+            start = np.concatenate([start_s, start_e])[:num_values]
+
+            end_s = np.arange(self.window_size, dtype="int64") + 1
+            end_e = start_e + self.window_size
+            end = np.concatenate([end_s, end_e])[:num_values]
+
         return start, end
 
 
@@ -100,7 +143,8 @@ class VariableWindowIndexer(BaseIndexer):
     ) -> Tuple[np.ndarray, np.ndarray]:
 
         return calculate_variable_window_bounds(
-            num_values, self.window_size, min_periods, center, closed, self.index_array,
+            num_values, self.window_size, self.step_size,
+            min_periods, center, closed, self.index_array,
         )
 
 

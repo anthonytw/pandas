@@ -10396,6 +10396,7 @@ class NDFrame(PandasObject, SelectionMixin, indexing.IndexingMixin):
             on=None,
             axis=0,
             closed=None,
+            step=None,
         ):
             axis = self._get_axis_number(axis)
 
@@ -10409,6 +10410,7 @@ class NDFrame(PandasObject, SelectionMixin, indexing.IndexingMixin):
                     on=on,
                     axis=axis,
                     closed=closed,
+                    step=step,
                 )
 
             return Rolling(
@@ -10420,6 +10422,7 @@ class NDFrame(PandasObject, SelectionMixin, indexing.IndexingMixin):
                 on=on,
                 axis=axis,
                 closed=closed,
+                step=step,
             )
 
         cls.rolling = rolling

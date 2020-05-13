@@ -68,6 +68,7 @@ class _Window(PandasObject, ShallowMixin, SelectionMixin):
         "axis",
         "on",
         "closed",
+        "step",
     ]
     exclusions: Set[str] = set()
 
@@ -81,6 +82,7 @@ class _Window(PandasObject, ShallowMixin, SelectionMixin):
         axis: Axis = 0,
         on: Optional[Union[str, Index]] = None,
         closed: Optional[str] = None,
+        step: Optional[int] = None,
         **kwargs,
     ):
 
@@ -89,6 +91,7 @@ class _Window(PandasObject, ShallowMixin, SelectionMixin):
         self.on = on
         self.closed = closed
         self.window = window
+        self.step = step
         self.min_periods = min_periods
         self.center = center
         self.win_type = win_type
@@ -279,13 +282,15 @@ class _Window(PandasObject, ShallowMixin, SelectionMixin):
 
         return values
 
-    def _wrap_result(self, result, block=None, obj=None):
+    def _wrap_result(self, result, idx=None, block=None, obj=None):
         """
         Wrap a single result.
         """
         if obj is None:
             obj = self._selected_obj
         index = obj.index
+        if idx is not None:
+            index = index[idx]
 
         if isinstance(result, np.ndarray):
 
@@ -311,9 +316,10 @@ class _Window(PandasObject, ShallowMixin, SelectionMixin):
         from pandas import Series, concat
 
         final = []
-        for result, block in zip(results, blocks):
+        for result_tuple, block in zip(results, blocks):
 
-            result = self._wrap_result(result, block=block, obj=obj)
+            idx, result = result_tuple
+            result = self._wrap_result(result, idx=idx, block=block, obj=obj)
             if result.ndim == 1:
                 return result
             final.append(result)
@@ -400,8 +406,9 @@ class _Window(PandasObject, ShallowMixin, SelectionMixin):
         if isinstance(self.window, BaseIndexer):
             return self.window
         if self.is_freq_type:
-            return VariableWindowIndexer(index_array=self._on.asi8, window_size=window)
-        return FixedWindowIndexer(window_size=window)
+            return VariableWindowIndexer(
+                index_array=self._on.asi8, window_size=window, step_size=self.step)
+        return FixedWindowIndexer(window_size=window, step_size=self.step)
 
     def _apply(
         self,
@@ -489,19 +496,20 @@ class _Window(PandasObject, ShallowMixin, SelectionMixin):
                         center=self.center,
                         closed=self.closed,
                     )
-                    return func(x, start, end, min_periods)
+                    return start, func(x, start, end, min_periods)
 
             else:
 
                 def calc(x):
                     x = np.concatenate((x, additional_nans))
-                    return func(x, window, self.min_periods)
+                    return None, func(x, window, self.min_periods)
 
             with np.errstate(all="ignore"):
                 if values.ndim > 1:
                     result = np.apply_along_axis(calc, self.axis, values)
+                    idx = None
                 else:
-                    result = calc(values)
+                    idx, result = calc(values)
                     result = np.asarray(result)
 
             if use_numba_cache:
@@ -510,7 +518,7 @@ class _Window(PandasObject, ShallowMixin, SelectionMixin):
             if center:
                 result = self._center_window(result, window)
 
-            results.append(result)
+            results.append((idx, result))
 
         return self._wrap_results(results, block_list, obj, exclude)
 
@@ -1845,7 +1853,7 @@ class Rolling(_Rolling_and_Expanding):
         ):
 
             self._validate_monotonic()
-            freq = self._validate_freq()
+            window_freq = self._validate_freq('window')
 
             # we don't allow center
             if self.center:
@@ -1856,8 +1864,12 @@ class Rolling(_Rolling_and_Expanding):
 
             # this will raise ValueError on non-fixed freqs
             self.win_freq = self.window
-            self.window = freq.nanos
+            self.window = window_freq.nanos
             self.win_type = "freq"
+
+            if self.step is not None and isinstance(
+                    self.step, (str, DateOffset, timedelta)):
+                self.step = self._validate_freq('step').nanos
 
             # min_periods must be an integer
             if self.min_periods is None:
@@ -1870,6 +1882,10 @@ class Rolling(_Rolling_and_Expanding):
             raise ValueError("window must be an integer")
         elif self.window < 0:
             raise ValueError("window must be non-negative")
+        elif self.step is not None and not is_integer(self.step):
+            raise ValueError("step must be an integer")
+        elif self.step is not None and self.step <= 0:
+            raise ValueError("step must be positive")
 
         if not self.is_datetimelike and self.closed is not None:
             raise ValueError(
@@ -1886,17 +1902,19 @@ class Rolling(_Rolling_and_Expanding):
                 formatted = "index"
             raise ValueError(f"{formatted} must be monotonic")
 
-    def _validate_freq(self):
+    def _validate_freq(self, attr_name):
         """
-        Validate & return window frequency.
+        Validate & return a frequency.
         """
         from pandas.tseries.frequencies import to_offset
 
+        attr = getattr(self, attr_name)
+
         try:
-            return to_offset(self.window)
+            return to_offset(attr)
         except (TypeError, ValueError) as err:
             raise ValueError(
-                f"passed window {self.window} is not "
+                f"Passed {attr_name}={attr} which is not "
                 "compatible with a datetimelike index"
             ) from err
 

@@ -180,7 +180,7 @@ def roll_sum_variable(ndarray[float64_t] values, ndarray[int64_t] start,
     cdef:
         float64_t sum_x = 0
         int64_t s, e
-        int64_t nobs = 0, i, j, N = len(values)
+        int64_t nobs = 0, i, j, N = len(start)
         ndarray[float64_t] output
         bint is_monotonic_bounds
 
